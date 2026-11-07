@@ -10,6 +10,10 @@
 
 ## [Unreleased]
 
+### Added
+- **The agent's replies carry a role gutter, and the markdown layer is now arnative's own.** Assistant messages render behind a 2-column bar — accent `▎` on the final reply, dim `▏` on an intermediate turn — and the copy path strips it so pasted text stays clean (`extensions/timestamps.ts`, `roleGutter`, `lib/ansi.ts`, `stripRoleGutter`; `extensions/ui-render-tweaks.ts`). The markdown restyle is one patch on `InteractiveMode.getMarkdownThemeWithSettings` plus the same layer around tool boxes' markdown detail (`lib/markdown-theme.ts`, `arnativeMarkdownTheme`; `extensions/tools.ts`): code fences render as labeled rules (`─ ts ─────`), quote bars move to the accent tier, bullets become `•`, H3+ prefixes become `▸`, ```diff fences paint `+`/`-`/`@@` with the `toolDiff*` tokens, the expanded `edit` box paints `+`/`-` lines on the tool backgrounds, and H1/H2 get a dim banner rule (assistant messages only).
+- **Plain code blocks no longer read as diff output.** `mdCodeBlock` drops the `success` green for plain `fg`, and `mdQuoteBorder` moves from `fgMuted` to `accentBorder` — all themes regenerated (`themes/gen-themes.mjs`).
+
 ## [0.12.0] - 2026-11-14
 
 - Fix Todos auto-hide cancellation when a body click opens a finished task list.
