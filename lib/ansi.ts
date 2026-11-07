@@ -20,6 +20,13 @@ export function stripAnsi(s: string): string {
 	return s.replace(ANSI_RE, "");
 }
 
+/** Drop the assistant role gutter (`▎ `/`▏ `, extensions/timestamps.ts) from the start of
+ *  every line. The fullscreen copy path hands back RENDERED screen text, and the gutter
+ *  is a real cell — without this, a copied paragraph carries the bar on every line. */
+export function stripRoleGutter(text: string): string {
+	return text.split("\n").map((l) => l.replace(/^[▎▏] /, "")).join("\n");
+}
+
 /** The active pi theme out of an event ctx (`ctx.ui.theme`), null when absent. */
 export function themeOf<T>(ctx: unknown): T | null {
 	return (ctx as { ui?: { theme?: T } } | null | undefined)?.ui?.theme ?? null;
@@ -146,6 +153,11 @@ if (isMain(import.meta.url)) {
 	assert(ansiBgOpen({ bg: (_c, t) => `\x1b[48;2;9;9;9m${t}\x1b[49m` }, "selectedBg") === "\x1b[48;2;9;9;9m", "bg probe without reset");
 	assert(stripAnsi("\x1b[2mA\x1b[22m") === "A", "stripAnsi removes SGR colors");
 	assert(stripAnsi("x\x1b[K") === "x", "stripAnsi removes non-SGR CSI too");
+	// The copy-side of the role gutter: every leading bar goes, other content stays.
+	assert(stripRoleGutter("▎ ligne une\n▏ ligne deux\nplain") === "ligne une\nligne deux\nplain", "stripRoleGutter drops both bars, keeps plain lines");
+	assert(stripRoleGutter("▎ ") === "", "a gutter-only line copies as empty");
+	assert(stripRoleGutter("texte ▎ au milieu") === "texte ▎ au milieu", "a bar inside a line is content and stays");
+	assert(stripRoleGutter("│ boîte outil") === "│ boîte outil", "tool-box walls are not the gutter");
 	assert(themeOf({ ui: { theme: "T" } }) === "T", "themeOf reads ctx.ui.theme");
 	assert(themeOf(null) === null, "themeOf tolerates a missing ctx");
 

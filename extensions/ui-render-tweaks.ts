@@ -13,6 +13,13 @@
  *    text darkened (theme canvas) so contrast stays high (9.6:1).
  * 6. `ctx.ui.select` rows: pi paints the whole selected row accent -> keep accent on
  *    the `→` marker and `·` separators, selected text in soft.
+ * 7. Arnative markdown theme (lib/markdown-theme.ts): one patch on
+ *    `InteractiveMode.getMarkdownThemeWithSettings` frames code blocks, heavy-quotes the
+ *    quote bar, swaps bullets for `•` and heading prefixes for `▸`, and colors ```diff
+ *    fences with the toolDiff* tokens — streaming, history and every component that asks
+ *    the mode for its theme.
+ * 8. Assistant H1/H2 banners: a `registerMarkdownTransformer` call drops a dim rule
+ *    under H1/H2 headings (lib/markdown-theme.ts `bannerHeadings`).
  */
 import {
 	CompactionSummaryMessageComponent,
@@ -33,16 +40,18 @@ import {
 	TuiAltScreen,
 	visibleWidth,
 	type Component,
+	type MarkdownTheme,
 	type TuiMouseEvent,
 	type TuiMouseEventResult,
 } from "@earendil-works/pi-tui";
 import { readdirSync, readFileSync } from "node:fs";
 import { renderBoxLines } from "../lib/box.ts";
 import { statusRows } from "../lib/status-widget.ts";
-import { ansiBgOpen, getActiveTheme, setActiveTheme, stripAnsi, themeOf, softSecondaryOf } from "../lib/ansi.ts";
+import { ansiBgOpen, getActiveTheme, setActiveTheme, stripAnsi, stripRoleGutter, themeOf, softSecondaryOf } from "../lib/ansi.ts";
 import { assert, isMain } from "../lib/check.ts";
 import { contrast, oklchToRgb, parseOklch, toHex } from "../lib/color.ts";
 import { expandKeyName } from "../lib/format.ts";
+import { arnativeMarkdownTheme, bannerHeadings } from "../lib/markdown-theme.ts";
 import { patchOnce } from "../lib/patch.ts";
 
 type ActiveTheme = { fg(color: string, text: string): string; bg?(color: string, text: string): string } | null;
@@ -151,6 +160,15 @@ if (TuiAltScreen?.prototype) {
 			return fgOpen && bgOpen ? recolorSelection(highlighted, fgOpen, bgOpen) : highlighted;
 		});
 	}
+	// Fullscreen copy reads the RENDERED screen, and the assistant role gutter
+	// (extensions/timestamps.ts) is a real cell — strip it on the copy path so a pasted
+	// paragraph carries no bar. Tool-box walls and quote bars are not touched.
+	if (typeof proto.getActiveSelectionText === "function") {
+		patchOnce(proto, "getActiveSelectionText", (orig) => function (this: any): string | undefined {
+			const text = orig.call(this);
+			return text === undefined ? undefined : stripRoleGutter(text);
+		});
+	}
 }
 
 if (TuiAltScreen?.prototype) {
@@ -209,6 +227,12 @@ export default function uiRenderTweaks(pi: ExtensionAPI) {
 		const th = themeOf<Exclude<ActiveTheme, null>>(ctx);
 		if (th) setActiveTheme(th);
 	});
+
+	// 8. Assistant H1/H2 banners: a dim rule lands under the heading (bannerHeadings).
+	// User and thinking text pass through untouched.
+	pi.registerMarkdownTransformer((markdown, { messageType, isStreaming }) =>
+		messageType === "assistant" ? bannerHeadings(markdown, isStreaming) : markdown,
+	);
 
 	// 4. `pi-jev-eye-review` contract message: use our own border box.
 	// Collapsed by default: [pi-jev-eye] Reviewed turn contract. [click to expand]
@@ -294,6 +318,20 @@ if (InteractiveMode?.prototype) {
 		}
 		return origSetWidget.call(this, key, content, options);
 	});
+}
+
+// 7. Arnative markdown theme: the one patch site for the markdown layer (see
+// lib/markdown-theme.ts). getMarkdownThemeWithSettings is the single getter pi uses for
+// streaming AND history, so every Markdown component in the transcript follows.
+if (InteractiveMode?.prototype) {
+	const proto = InteractiveMode.prototype as unknown as {
+		getMarkdownThemeWithSettings?: () => MarkdownTheme;
+	};
+	if (typeof proto.getMarkdownThemeWithSettings === "function") {
+		patchOnce(proto, "getMarkdownThemeWithSettings", (orig) => function (this: any): MarkdownTheme {
+			return arnativeMarkdownTheme(orig.call(this), activeTheme());
+		});
+	}
 }
 
 export class JevReviewBoxComponent implements Component {
@@ -414,6 +452,19 @@ if (isMain(import.meta.url)) {
 	assert(ansiFgOpen(null) === "", "no theme: empty fgOpen");
 	assert(ansiFgOpen({ fg: (_c, t) => `\x1b[38;2;1;2;3m${t}\x1b[39m` }) === "\x1b[38;2;1;2;3m", "fgOpen taken from the theme probe");
 	assert(ansiBgOpen({ bg: (_c, t) => `\x1b[48;2;9;9;9m${t}\x1b[49m` }, "selectedBg") === "\x1b[48;2;9;9;9m", "bgOpen selectedBg taken");
+
+	// Copy: the role gutter is a rendered cell, so the copy path must strip it. The stub
+	// feeds the patched method exactly what the real one reads (screen rows + columns).
+	const selStub = {
+		getSelectionBounds: () => ({ start: { row: 0 }, end: { row: 1 } }),
+		previousScreen: ["▎ ligne une", "▏ ligne deux", "│ boîte outil"],
+		getSelectionColumns: (_l: string, _r: number) => ({ start: 0, end: 80 }),
+		currentLayout: undefined,
+	};
+	const copied = (TuiAltScreen.prototype as any).getActiveSelectionText.call(selStub);
+	assert(copied === "ligne une\nligne deux", "copy: the role gutter is stripped from the selection");
+	const noSel = (TuiAltScreen.prototype as any).getActiveSelectionText.call({ getSelectionBounds: () => null });
+	assert(noSel === undefined, "copy: no selection still returns undefined");
 
 	// "Jump to latest message" pill: accent bg + canvas text (not grey selectedBg).
 	// Use the REAL theme: the permissive stub would let `bg("accent")` through,
@@ -635,6 +686,7 @@ if (isMain(import.meta.url)) {
 	const fakePi = {
 		handlers: [] as any[],
 		renderers: {} as Record<string, any>,
+		transformers: [] as any[],
 		on(_e: string, h: any) {
 			this.handlers.push(h);
 			return () => {};
@@ -642,10 +694,32 @@ if (isMain(import.meta.url)) {
 		registerMessageRenderer(t: string, r: any) {
 			this.renderers[t] = r;
 		},
+		registerMarkdownTransformer(t: any) {
+			this.transformers.push(t);
+		},
 	};
 	initTheme(); // markdown + pi's internal theme (already active in a real session)
 	uiRenderTweaks(fakePi as any);
 	await fakePi.handlers[0]({}, { ui: { theme: { fg: (_c: string, t: string) => t } } });
+
+	// markdown layer: the patched getter frames fences, rails code, swaps glyphs
+	const mdTheme = InteractiveMode.prototype.getMarkdownThemeWithSettings.call({
+		settingsManager: { getCodeBlockIndent: () => "  " },
+	});
+	assert(mdTheme.codeBlockIndent === "  ", "markdown layer: pi's own code indent stays (a copied block must paste clean)");
+	assert(stripAnsi(mdTheme.codeBlockBorder("```ts")) === "─ ts ─────", "markdown layer: labeled fence rule");
+	assert(stripAnsi(mdTheme.codeBlockBorder("```")) === "──────────", "markdown layer: bare fence rule");
+	assert(stripAnsi(mdTheme.listBullet("- ")) === "• ", "markdown layer: bullet glyph");
+	assert(stripAnsi(mdTheme.quoteBorder("│ ")) === "▌ ", "markdown layer: heavy quote bar");
+	assert(stripAnsi(mdTheme.heading("### ")) === "▸ ", "markdown layer: heading glyph");
+	assert(JSON.stringify(mdTheme.highlightCode!("+ a", "diff")) === JSON.stringify(["+ a"]), "markdown layer: diff fences take the semantic painter");
+
+	// banner transformer: registered once, assistant-only
+	assert(fakePi.transformers.length === 1, "one markdown transformer registered");
+	const banners = fakePi.transformers[0]!;
+	assert(banners("# Title\nbody", { messageType: "assistant", isStreaming: false }) === "# Title\n\n---\nbody", "assistant H1 gains a rule");
+	assert(banners("# Title\nbody", { messageType: "user", isStreaming: false }) === "# Title\nbody", "user text untouched");
+	assert(banners("# Still", { messageType: "assistant", isStreaming: true }) === "# Still", "streaming heading left alone");
 
 	const kids: any[] = [];
 	const fake = {

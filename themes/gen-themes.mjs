@@ -330,10 +330,14 @@ function derive(spec) {
 		mdLink: spec.linkColor ?? oklch(0.8, Math.min(c * 0.7, 0.14), roleHue("link")),
 		mdLinkUrl: "fgDim",
 		mdCode: spec.codeColor ?? accentLiteral,
-		mdCodeBlock: "success",
+		// Plain code blocks read as code (fg), not as a diff addition (success): the
+		// green made every un-highlighted block look like `+` output.
+		mdCodeBlock: "fg",
 		mdCodeBlockBorder: "fgMuted",
 		mdQuote: "fgMuted",
-		mdQuoteBorder: "fgMuted",
+		// The quote bar carries the accent tier, so a quote reads as a quote and not
+		// as muted prose (its text stays muted).
+		mdQuoteBorder: "accentBorder",
 		mdHr: "fgFaint",
 		mdListBullet: spec.bulletColor ?? accentLiteral,
 

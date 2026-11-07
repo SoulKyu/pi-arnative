@@ -6,6 +6,11 @@
  * - Assistant: clock only on the final reply (a message with no toolCall), not on
  *   Thinking... or intermediate turns.
  *
+ * Plus the assistant role gutter: every assistant message carries a 2-column bar in
+ * front of its lines — accent `▎` on the final reply, dim `▏` on intermediate turns —
+ * so the agent's prose pops against the tool boxes and the user bubble without a
+ * second patch site. The inner render loses the 2 gutter columns so nothing overflows.
+ *
  * Also patches the user bubble bg: Markdown text carries \x1b[0m mid-line, so
  * padding after the reset renders dark (a black block).
  */
@@ -70,6 +75,25 @@ export function formatTimeBadge(timeStr: string, th: { fg(color: string, text: s
 		}
 	}
 	return `\x1b[36m${timeStr}\x1b[39m`;
+}
+
+/** The role gutter paint: accent `▎` (final reply) or dim `▏` (intermediate turn);
+ *  the bare glyph when the theme has no such token (a bar with no color still
+ *  separates the prose from the boxes). */
+export function roleGutter(th: NonNullable<ThemeProxy>, color: "accent" | "dim"): string {
+	const glyph = color === "accent" ? "▎ " : "▏ ";
+	try {
+		return th.fg(color, glyph);
+	} catch {
+		return glyph;
+	}
+}
+
+/** Gutter one rendered line: after the OSC 133 prompts (they must stay first), before
+ *  everything else. */
+export function gutterLine(line: string, gutter: string): string {
+	const osc = line.match(/^(\x1b\]133;[A-Z]\x07)+/);
+	return osc ? `${osc[0]}${gutter}${line.slice(osc[0].length)}` : `${gutter}${line}`;
 }
 
 // User bubble bg open code (no closing reset) -> lib/ansi.ts (single definition).
@@ -174,11 +198,19 @@ if (UserMessageComponent?.prototype?.render || AssistantMessageComponent?.protot
 		const proto = AssistantMessageComponent.prototype as any;
 		const origRender = originalOf<(this: any, width: number) => string[]>(proto, "render");
 		proto.render = markPatched(function (this: any, width: number): string[] {
-			const lines = origRender.call(this, width);
 			const lastMsg = (this as { lastMessage?: AssistantMessage }).lastMessage;
+			const th = tsState.theme;
+
+			// Role gutter: accent `▎` on the final reply, dim `▏` on an intermediate turn.
+			// The inner render loses the 2 gutter columns so no line overflows; below the
+			// narrow-terminal guard the message renders untouched (a 2-col loss would wrap).
+			const hasToolCalls = Boolean(lastMsg?.content?.some((c) => c.type === "toolCall"));
+			const gutter = th && width >= 24 ? roleGutter(th, hasToolCalls ? "dim" : "accent") : "";
+			const usable = gutter ? width - 2 : width;
+			const lines = origRender.call(this, usable);
+			if (gutter) for (let i = 0; i < lines.length; i++) lines[i] = gutterLine(lines[i], gutter);
 
 			// Clock only on the final reply (a message with no toolCall)
-			const hasToolCalls = lastMsg?.content?.some((c) => c.type === "toolCall");
 			if (hasToolCalls) return lines;
 
 			// and only when there is real answer text (not thinking only)
@@ -192,7 +224,9 @@ if (UserMessageComponent?.prototype?.render || AssistantMessageComponent?.protot
 			// First text line that is neither an OSC zone nor a thinking header
 			let targetIdx = -1;
 			for (let i = 0; i < lines.length; i++) {
-				const cleaned = lines[i].replace(/^(\x1b\]133;[A-Z]\x07)+/, "").trim();
+				// stripAnsi drops the gutter paint; a colored Thinking... line must still be
+				// recognized and skipped.
+				const cleaned = stripAnsi(lines[i].replace(/^(\x1b\]133;[A-Z]\x07)+/, "")).trim();
 				// Never paste onto the "Thinking..." line
 				if (cleaned.length > 0 && !/^thinking\b/i.test(cleaned)) {
 					targetIdx = i;
@@ -213,6 +247,8 @@ if (UserMessageComponent?.prototype?.render || AssistantMessageComponent?.protot
 				const textW = visibleWidth(cleanText);
 				const minGap = 2;
 
+				// The clock stays flush with the terminal's right edge (full `width`): the
+				// guttered content is only `usable` wide, so the badge fills the reclaimed gap.
 				if (textW + minGap + timeW <= width) {
 					lines[targetIdx] = `${prefix}${placeTimeAtRight(rest, width, badge, timeW, "")}`;
 				}
@@ -250,6 +286,16 @@ export default function (pi: ExtensionAPI) {
 
 // Self-check: `node extensions/timestamps.ts`
 if (isMain(import.meta.url)) {
+	// role gutter: the glyph keeps its place behind the OSC 133 prompts
+	const tag = { fg: (c: string, t: string) => `<${c}>${t}</${c}>` };
+	assert(roleGutter(tag, "accent") === "<accent>▎ </accent>", "accent gutter on the final reply");
+	assert(roleGutter(tag, "dim") === "<dim>▏ </dim>", "dim gutter on an intermediate turn");
+	const throwing = { fg: (_c: string, _t: string) => { throw new Error("no token"); } };
+	assert(roleGutter(throwing as never, "accent") === "▎ ", "a theme without the token keeps the bare glyph");
+	assert(gutterLine("plain", "G") === "Gplain", "plain line gets the gutter in front");
+	assert(gutterLine("\x1b]133;A\x07text", "G") === "\x1b]133;A\x07Gtext", "OSC prompts stay first, gutter behind");
+	assert(gutterLine("", "G") === "G", "an empty line still carries the bar (the gutter runs the message height)");
+
 	const badge = "\x1b[36m17:09\x1b[39m";
 	const badgeW = 5;
 

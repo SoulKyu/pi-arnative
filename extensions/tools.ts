@@ -39,7 +39,8 @@ import {
 import { Markdown, truncateToWidth, visibleWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
 import { homedir } from "node:os";
 import { inSpans, renderBoxLines as box, type TextSpan, textSpans } from "../lib/box.ts";
-import { stripAnsi, softSecondaryOf } from "../lib/ansi.ts";
+import { ansiBgOpen, stripAnsi, softSecondaryOf } from "../lib/ansi.ts";
+import { arnativeMarkdownTheme } from "../lib/markdown-theme.ts";
 import { actionWord } from "../lib/todos.ts";
 import { assert, isMain } from "../lib/check.ts";
 import { markPatched, originalOf } from "../lib/patch.ts";
@@ -206,13 +207,14 @@ export const HINT_EXPAND = "[show]";
 export const HINT_COLLAPSE = "[hide]";
 
 // Expanded detail: themed markdown (same layout as a normal pi message — code
-// blocks, lists, colors) instead of a plain dim dump.
+// blocks, lists, colors) instead of a plain dim dump. The arnative markdown layer
+// keeps fences/bullets/quotes consistent with the transcript.
 export const fullText = (r: TResult, _th: Theme, width = 0): string[] => {
 	const text = textOf(r);
 	if (!text) return [];
 	if (!width) return text.split("\n").map((l) => _th.fg("dim", l));
 	try {
-		return new Markdown(text, 0, 0, getMarkdownTheme()).render(Math.max(8, width));
+		return new Markdown(text, 0, 0, arnativeMarkdownTheme(getMarkdownTheme(), _th)).render(Math.max(8, width));
 	} catch {
 		return text.split("\n").map((l) => _th.fg("dim", l));
 	}
@@ -823,7 +825,7 @@ function arnativeTools(pi: ExtensionAPI) {
 		(a, _th, soft) => soft(shortPath(a.path ?? "")),
 	);
 
-	// edit: `edit path`, `󱞩 +N / -M`, expand = diff toolDiff*
+	// edit: `edit path`, `󱞩 +N / -M`, expand = diff toolDiff* on the box backgrounds
 	minimal(
 		pi,
 		createEditTool(cwd),
@@ -843,13 +845,18 @@ function arnativeTools(pi: ExtensionAPI) {
 		(r, th) => {
 			const diff: string = r.details?.diff ?? "";
 			if (!diff) return fullText(r, th);
-			return diff.split("\n").map((l) =>
-				l.startsWith("+") && !l.startsWith("+++")
-					? th.fg("toolDiffAdded", l)
-					: l.startsWith("-") && !l.startsWith("---")
-						? th.fg("toolDiffRemoved", l)
-						: th.fg("toolDiffContext", l),
-			);
+			// +/- lines carry the box backgrounds (like the transcript's ```diff fences),
+			// hunk headers the accent — the same grammar as the collapsed `+N / -M`.
+			const addBg = ansiBgOpen(th, "toolSuccessBg");
+			const delBg = ansiBgOpen(th, "toolErrorBg");
+			return diff.split("\n").map((l) => {
+				if (l.startsWith("+") && !l.startsWith("+++"))
+					return addBg ? `${addBg}${th.fg("toolDiffAdded", l)}\x1b[49m` : th.fg("toolDiffAdded", l);
+				if (l.startsWith("-") && !l.startsWith("---"))
+					return delBg ? `${delBg}${th.fg("toolDiffRemoved", l)}\x1b[49m` : th.fg("toolDiffRemoved", l);
+				if (l.startsWith("@@")) return th.fg("accent", l);
+				return th.fg("toolDiffContext", l);
+			});
 		},
 	);
 }
@@ -1477,6 +1484,31 @@ if (isMain(import.meta.url)) {
 		assert(opened[1]!.includes("[hide]"), "minimal(): the expanded title row offers the fold hint");
 		assert(!opened.some((l) => l.includes("[show]")), "minimal(): the folded box offers no expand hint");
 		assert(opened.every((l) => visibleWidth(l) === 74), "minimal(): the fold hint keeps every row the box width");
+		// The expanded diff paints +/- lines with the box backgrounds. The default test
+		// theme resolves the tool bg tokens to "transparent" (\x1b[49m), so the assert
+		// checks the line against the theme's OWN open code — whatever it resolves to.
+		let seenTheme: any;
+		const spyEdit = {
+			...reg2.edit,
+			renderResult(r: any, o: any, th: any, ctx: any) {
+				seenTheme = th;
+				return reg2.edit.renderResult(r, o, th, ctx);
+			},
+		};
+		const rawBox = (() => {
+			const c: any = new ToolExecutionComponent("edit", "raw-1", { path: "README.md" }, {}, spyEdit, { requestRender() {} }, cwd);
+			c.updateResult(diffRes, false);
+			c.setExpanded(true);
+			return c;
+		})();
+		const rawOpen = rawBox.render(74) as string[];
+		const addBg = ansiBgOpen(seenTheme, "toolSuccessBg");
+		const delBg = ansiBgOpen(seenTheme, "toolErrorBg");
+		const addLine = rawOpen.find((l) => stripAnsi(l).includes("+new"));
+		const delLine = rawOpen.find((l) => stripAnsi(l).includes("-old"));
+		assert(addLine && addBg && addLine.includes(`${addBg}${seenTheme.fg("toolDiffAdded", "+new")}\x1b[49m`), "edit diff: an added line opens the success bg and closes it");
+		assert(delLine && delBg && delLine.includes(`${delBg}${seenTheme.fg("toolDiffRemoved", "-old")}\x1b[49m`), "edit diff: a removed line opens the error bg and closes it");
+		assert(rawOpen.some((l) => stripAnsi(l).includes("@@")), "edit diff: hunk headers stay visible");
 		assert(
 			minRender("edit", { path: "README.md" }, { content: [{ type: "text", text: "done" }], details: {} }, true).every((l) => !l.includes("[hide]")),
 			"minimal(): nothing hidden, so an expanded box offers no fold hint",

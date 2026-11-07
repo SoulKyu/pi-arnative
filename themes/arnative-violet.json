@@ -51,10 +51,10 @@
 		"mdLink": "oklch(80% 0.098 0)",
 		"mdLinkUrl": "fgDim",
 		"mdCode": "oklch(80% 0.098 294)",
-		"mdCodeBlock": "success",
+		"mdCodeBlock": "fg",
 		"mdCodeBlockBorder": "fgMuted",
 		"mdQuote": "fgMuted",
-		"mdQuoteBorder": "fgMuted",
+		"mdQuoteBorder": "accentBorder",
 		"mdHr": "fgFaint",
 
 		"mdListBullet": "oklch(80% 0.098 294)",
