@@ -42,6 +42,8 @@ export const SHORTCUT_OPEN_ARNATIVE = build("a");
 /** Scroll the expanded task list: `j` down, `k` up, one task per press. */
 export const SHORTCUT_SCROLL_TODOS_DOWN = build("j");
 export const SHORTCUT_SCROLL_TODOS_UP = build("k");
+/** Cycle the transcript view (Replies, Activity, All). Not `v`: alt+v pastes on Windows/WSL. */
+export const SHORTCUT_CYCLE_VIEW = build("w");
 
 /** The `←` byte matcher. Esc is the advertised way out of a screen (Back, or Close at the
  *  root); `←` stays as an alias so muscle memory keeps working, but no footer names it. */

@@ -36,7 +36,7 @@ import type { BoxTheme } from "../lib/box.ts";
 import { BRAND, renderBoxLines } from "../lib/box.ts";
 import { getActiveTheme, setActiveTheme, softOf, softSecondaryOf, stripAnsi, themeOf } from "../lib/ansi.ts";
 import { capitalize, expandKeyName, modelDisplayParts } from "../lib/format.ts";
-import { SHORTCUT_NEW_SESSION, SHORTCUT_NEXT_TAB, SHORTCUT_RELOAD } from "../lib/shortcuts.ts";
+import { SHORTCUT_CYCLE_VIEW, SHORTCUT_NEW_SESSION, SHORTCUT_NEXT_TAB, SHORTCUT_RELOAD } from "../lib/shortcuts.ts";
 import { HEADER_PRESET_KEY as HEADER_PRESET_CONFIG_KEY, loadChoice, saveChoice } from "../lib/preset-store.ts";
 import { formatTokens, getModelAllTimeUsage } from "../lib/usage-store.ts";
 
@@ -315,6 +315,7 @@ export const SHORTCUTS: string[] = [
 	`[${SHORTCUT_NEXT_TAB.label}] Next tab`,
 	`[${SHORTCUT_NEW_SESSION.label}] New`,
 	`[${SHORTCUT_RELOAD.label}] Reload`,
+	`[${SHORTCUT_CYCLE_VIEW.label}] View`,
 ];
 
 export function wrapCommaItems(items: string[], maxWidth: number): string[] {
