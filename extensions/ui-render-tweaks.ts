@@ -26,6 +26,7 @@ import {
 	CompactionSummaryMessageComponent,
 	ExtensionSelectorComponent,
 	getMarkdownTheme,
+	highlightCode,
 	initTheme,
 	InteractiveMode,
 	Theme,
@@ -349,7 +350,7 @@ if (InteractiveMode?.prototype) {
 	};
 	if (typeof proto.getMarkdownThemeWithSettings === "function") {
 		patchOnce(proto, "getMarkdownThemeWithSettings", (orig) => function (this: any): MarkdownTheme {
-			return arnativeMarkdownTheme(orig.call(this), activeTheme());
+			return arnativeMarkdownTheme(orig.call(this), activeTheme(), highlightCode);
 		});
 	}
 }
@@ -571,6 +572,8 @@ export class ThinkingLabelComponent implements Component {
 	private startMs: number | undefined;
 	private finished: string | undefined;
 	private getTheme: () => ActiveTheme;
+	private content: string;
+	expanded = false;
 
 	constructor(
 		padX: number,
@@ -578,17 +581,23 @@ export class ThinkingLabelComponent implements Component {
 		startMs: number | undefined,
 		getTheme: () => ActiveTheme,
 		finished?: string,
+		content = "",
 	) {
 		this.isActive = isActive;
 		this.startMs = startMs;
 		this.finished = finished;
 		this.getTheme = getTheme;
+		this.content = content;
 		this.inner = new Text(this.labelText(), padX, 0);
 	}
 
 	private labelText(): string {
 		const dots = this.isActive ? thinkingDotsAt(Date.now(), this.startMs ?? Date.now()) : "...";
-		return formatThinkingLabel(this.getTheme(), dots, this.isActive ? undefined : this.finished);
+		const base = formatThinkingLabel(this.getTheme(), dots, this.isActive ? undefined : this.finished);
+		const th = this.getTheme();
+		if (!this.content.trim() || this.isActive || !th) return base;
+		const hint = this.expanded ? "[click to collapse]" : "[click to expand]";
+		return `${base} ${th.fg("dim", hint)}`;
 	}
 
 	invalidate(): void {
@@ -597,7 +606,24 @@ export class ThinkingLabelComponent implements Component {
 
 	render(width: number): string[] {
 		this.inner.setText(this.labelText());
-		return this.inner.render(width);
+		const label = this.inner.render(width);
+		if (!this.expanded || !this.content.trim()) return label;
+		const th = this.getTheme();
+		if (!th) return label;
+		const lines = this.content.replace(/\s+$/, "").split("\n");
+		const cap = Math.max(4, Math.min(12, (process.stdout.rows || 28) - 8));
+		const shown = lines.length > cap ? lines.slice(0, cap) : lines;
+		const rows = shown.map((l) => th.fg("dim", l));
+		if (lines.length > cap) rows.push(th.fg("dim", `… ${lines.length - cap} more lines`));
+		return [...label, ...renderBoxLines(th, width, rows)];
+	}
+
+	handleMouse(event: TuiMouseEvent): TuiMouseEventResult | undefined {
+		if (event.type === "click" && event.button === "left" && this.content.trim()) {
+			this.expanded = !this.expanded;
+			return { handled: true };
+		}
+		return undefined;
 	}
 }
 
@@ -622,6 +648,9 @@ export function patchThinkingInAssistantMessage(comp: {
 		return false;
 	}
 	const activeRunIdx = activeThinkingRunIndex(comp.lastMessage, Boolean(comp.isStreaming));
+	const thinkingTexts = (comp.lastMessage?.content ?? [])
+		.filter((b) => b?.type === "thinking" && typeof b.thinking === "string" && b.thinking.trim())
+		.map((b) => b.thinking as string);
 	const children = comp.contentContainer?.children ?? [];
 	const starts = thinkingState.starts.get(comp) ?? [];
 	const finished = thinkingState.finished.get(comp) ?? [];
@@ -647,6 +676,7 @@ export function patchThinkingInAssistantMessage(comp: {
 				starts[runIdx],
 				activeTheme,
 				finished[runIdx],
+				thinkingTexts[runIdx] ?? "",
 			);
 			anyReplaced = true;
 		}
@@ -1057,6 +1087,23 @@ if (isMain(import.meta.url)) {
 		doneLines.some((l) => l.startsWith("\uec21 Thought for ")),
 		"a finished hidden thinking run settles on \uec21 Thought for Ns, not Thinking...",
 	);
+
+	// Collapsible thinking: a finished run with content shows an expand hint; a click on the
+	// label component toggles a dim box with the thinking text.
+	setActiveTheme({ fg: (_c: string, t: string) => t } as any); // plain theme so stripOsc sees raw text
+	const hintLines = activeComp.render(60).map(stripOsc);
+	assert(hintLines.some((l) => l.includes("[click to expand]")), "a finished run with content shows the expand hint");
+	const region = (activeComp as any).contentContainer?.children?.find((c: any) => c?.child instanceof ThinkingLabelComponent);
+	assert(region?.child instanceof ThinkingLabelComponent, "the thinking region child is the label component");
+	assert(region.child.handleMouse({ type: "click", button: "left" } as any)?.handled === true, "click on the label is handled when content exists");
+	const thinkExpLines = activeComp.render(60).map(stripOsc);
+	assert(thinkExpLines.some((l) => l.includes("pondering")) && thinkExpLines.some((l) => l.includes("╭")), "expanded thinking renders the content in a box");
+	assert(thinkExpLines.some((l) => l.includes("[click to collapse]")), "the expanded label offers collapse");
+	region.child.handleMouse({ type: "click", button: "left" } as any);
+	assert(activeComp.render(60).map(stripOsc).every((l) => !l.includes("pondering")), "a second click collapses the box again");
+	const emptyLabel = new ThinkingLabelComponent(1, false, undefined, activeTheme, "Thought for 1s", "");
+	assert(emptyLabel.handleMouse({ type: "click", button: "left" } as any) === undefined, "no content: click falls through to pi's own handling");
+	setActiveTheme(null);
 	clearThinkingTicker();
 
 	console.log("ui-render-tweaks.ts self-check OK");

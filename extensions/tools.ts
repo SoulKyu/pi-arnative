@@ -105,6 +105,25 @@ export class Lines {
 }
 const EMPTY = new Lines(() => []);
 
+/**
+ * Live partial output while a tool streams: the tail of the partial text, dim, in a pending
+ * box with a running marker — so a long bash/grep shows progress in the transcript instead
+ * of a silent box. Renders nothing while the tool has produced no text yet (same as EMPTY).
+ */
+export function partialResultLines(result: TResult, th: Theme): (width: number) => string[] {
+	return (width) => {
+		const text = textOf(result);
+		if (!text) return [];
+		const all = text.split("\n");
+		const cap = Math.max(4, (process.stdout.rows || 28) - 10);
+		const shown = all.length > cap ? all.slice(-cap) : all;
+		const rows = shown.map((l) => th.fg("dim", l));
+		if (all.length > cap) rows.unshift(th.fg("dim", `↑ ${all.length - cap} earlier lines`));
+		rows.push(th.fg("dim", `${spinIcon()} running…`));
+		return box(th, width, rows, "toolPendingBg");
+	};
+}
+
 const shortPath = (p: string): string => {
 	const home = homedir();
 	return p.startsWith(home) ? `~${p.slice(home.length)}` : p;
@@ -226,7 +245,7 @@ export const fullText = (r: TResult, _th: Theme, width = 0): string[] => {
 	if (!text) return [];
 	if (!width) return text.split("\n").map((l) => _th.fg("dim", l));
 	try {
-		return new Markdown(text, 0, 0, arnativeMarkdownTheme(getMarkdownTheme(), _th)).render(Math.max(8, width));
+		return new Markdown(text, 0, 0, arnativeMarkdownTheme(getMarkdownTheme(), _th, highlightCode)).render(Math.max(8, width));
 	} catch {
 		return text.split("\n").map((l) => _th.fg("dim", l));
 	}
@@ -653,7 +672,12 @@ if (ToolExecutionComponent?.prototype?.render) {
 		// (raw text, empty when collapsed) would drop our title row, so it is ignored.
 		const cdp = CDP_NAME.has(name);
 		return (result: TResult, opts: { expanded: boolean; isPartial?: boolean }, th: Theme, ctx: TCtx) => {
-			if (opts.isPartial) return EMPTY;
+			if (opts.isPartial) {
+				// hasResult hides the call box (it checks state.hasResult), so the partial
+				// output streams in a single box with its own running marker.
+				((ctx.state ??= {}) as Record<string, unknown>).hasResult = true;
+				return new Lines(partialResultLines(result, th));
+			}
 			((ctx.state ??= {}) as Record<string, unknown>).hasResult = true;
 			const text = textOf(result);
 			// pi-web-access reports failure via `details.error` without throwing, so
@@ -875,7 +899,10 @@ function minimal(
 			theme: Theme,
 			context: TCtx,
 		) {
-			if (isPartial) return EMPTY;
+			if (isPartial) {
+				((context.state ??= {}) as Record<string, unknown>).hasResult = true;
+				return new Lines(partialResultLines(result, theme));
+			}
 			((context.state ??= {}) as Record<string, unknown>).hasResult = true;
 			const text = textOf(result);
 			// `ctx.isError`/`result.isError` are the only honest sources: output text starting with
@@ -1068,7 +1095,10 @@ const codemodeRenderers = {
 		});
 	},
 	renderResult(result: TResult & { details?: any }, opts: { expanded: boolean; isPartial?: boolean }, th: Theme, ctx: TCtx) {
-		if (opts.isPartial) return EMPTY;
+		if (opts.isPartial) {
+			((ctx.state ??= {}) as Record<string, unknown>).hasResult = true;
+			return new Lines(partialResultLines(result, th));
+		}
 		((ctx.state ??= {}) as Record<string, unknown>).hasResult = true;
 		const isErr = Boolean(ctx.isError || result.isError);
 		const icon = isErr ? th.fg("error", "x") : th.fg("success", "\uf489");
@@ -1086,6 +1116,13 @@ if (isMain(import.meta.url)) {
 	const mark = (s: string) => `<${s}>`;
 	const th: Theme = { fg: (_c, s) => s };
 	const R = { content: [{ type: "text", text: "path:1:match a\npath:2:match b\npath:3:match c" }] };
+
+	// partial (streaming) result: tail shown in a pending box with a running marker
+	const partOut = new Lines(partialResultLines({ content: [{ type: "text", text: "l1\nl2\nl3" }] }, th)).render(40);
+	assert(partOut.some((l) => l.includes("l3")), "partial result shows the tail of the streaming output");
+	assert(partOut.some((l) => l.includes("running…")), "partial result carries the running marker");
+	assert(partOut[0].startsWith("╭") && partOut[partOut.length - 1].startsWith("╰"), "partial result is boxed");
+	assert(new Lines(partialResultLines({ content: [] }, th)).render(40).length === 0, "empty partial renders nothing (same as EMPTY)");
 
 	assert(smartTitle("echo hi") === "echo hi", "short text kept intact");
 	assert(smartTitle("ls a b c d e f g h") === "ls a b c d e…", "cut at the 6-word limit");
@@ -1307,10 +1344,16 @@ if (isMain(import.meta.url)) {
 			bErr.filter((l: string) => l.includes("╭")).length === 1,
 		"error: a single box (no nested box)",
 	);
+	const pCtx: Record<string, unknown> = { args: {} };
+	const bPartOut = bRes({ content: [{ type: "text", text: "x" }] }, { expanded: false, isPartial: true }, th, pCtx as any).render(60);
 	assert(
-		bRes({ content: [{ type: "text", text: "x" }] }, { expanded: false, isPartial: true }, th, { args: {} }).render(60)
-			.length === 0,
-		"pi-web-access: empty partial phase (no double box)",
+		bPartOut.length > 0 && bPartOut.some((l: string) => l.includes("x")) && bPartOut.some((l: string) => l.includes("running…")),
+		"pi-web-access: a partial with content streams in a pending box",
+	);
+	assert(pCtx.state?.hasResult === true, "partial sets hasResult so the call box hides (no double box)");
+	assert(
+		bRes({ content: [{ type: "text", text: "" }] }, { expanded: false, isPartial: true }, th, { args: {} }).render(60).length === 0,
+		"pi-web-access: an empty partial still renders nothing",
 	);
 	const bCall = ToolExecutionComponent.prototype.getCallRenderer.call(boxedRes) as any;
 	const bCallOut = bCall({}, th, { args: {}, state: {} }).render(60);

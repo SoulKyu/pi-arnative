@@ -18,6 +18,9 @@
  * - headings: H3+ `### ` prefixes become `▸ ` (they arrive bold-wrapped, so the match
  *   runs on the stripped text).
  * - ```diff fences: `+`/`-`/`@@` lines get the toolDiff* tokens, like the edit box.
+ * - code content: when the base theme does not highlight (pi's default markdown theme
+ *   leaves blocks plain), the fallback highlighter (pi's own `highlightCode`) is used, so
+ *   fences keep their rule AND their content gets per-language colors.
  */
 import type { MarkdownTheme } from "@earendil-works/pi-tui";
 import { stripAnsi } from "./ansi.ts";
@@ -68,8 +71,35 @@ export function diffBlock(code: string, th: Painter): string[] {
 /**
  * The arnative layer over any base theme. `th` only feeds the diff painter; when it is
  * null (before session_start) diff fences keep the base highlighting.
+ *
+ * `fallbackHighlight` (pi-coding-agent's own `highlightCode`) colors code content when the
+ * base theme leaves it plain — an identity base output means "no highlighting", never a
+ * reason to double-paint.
  */
-export function arnativeMarkdownTheme(base: MarkdownTheme, th: Painter | null): MarkdownTheme {
+export function arnativeMarkdownTheme(
+	base: MarkdownTheme,
+	th: Painter | null,
+	fallbackHighlight?: (code: string, lang?: string) => string[],
+): MarkdownTheme {
+	const baseHl = base.highlightCode;
+	const highlight =
+		baseHl || fallbackHighlight
+			? (code: string, lang?: string): string[] => {
+					if (th && /^(diff|patch)$/i.test(lang ?? "")) return diffBlock(code, th);
+					const plain = code.split("\n");
+					const baseOut = baseHl ? baseHl(code, lang) : undefined;
+					if (baseOut && JSON.stringify(baseOut) !== JSON.stringify(plain)) return baseOut;
+					if (fallbackHighlight) {
+						try {
+							const fb = fallbackHighlight(code, lang);
+							if (fb && JSON.stringify(fb) !== JSON.stringify(plain)) return fb;
+						} catch {
+							// a broken highlighter must never break rendering
+						}
+					}
+					return baseOut ?? plain;
+				}
+			: undefined;
 	return {
 		...base,
 		codeBlockBorder: (text) => base.codeBlockBorder(codeBlockRule(text)),
@@ -78,10 +108,7 @@ export function arnativeMarkdownTheme(base: MarkdownTheme, th: Painter | null): 
 		quoteBorder: (text) => base.quoteBorder(quoteBar(text)),
 		listBullet: (text) => base.listBullet(bulletOf(text)),
 		heading: (text) => base.heading(headingMark(text)),
-		highlightCode: base.highlightCode
-			? (code: string, lang?: string) =>
-				th && /^(diff|patch)$/i.test(lang ?? "") ? diffBlock(code, th) : base.highlightCode!(code, lang)
-			: undefined,
+		highlightCode: highlight,
 	};
 }
 
@@ -173,6 +200,19 @@ if (isMain(import.meta.url)) {
 	assert(JSON.stringify(arnativeMarkdownTheme(base, null).highlightCode!("+ a", "diff")) === JSON.stringify(["+ a"]), "no theme yet: diff keeps the base");
 	const noHighlight = { ...base, highlightCode: undefined };
 	assert(arnativeMarkdownTheme(noHighlight, tag).highlightCode === undefined, "a base without highlightCode stays without");
+
+	// fallback highlighter: used only when the base output is the identity (no highlighting)
+	const fb = (code: string, lang?: string) => code.split("\n").map((l) => `<hl:${lang ?? "?"}>${l}</hl>`);
+	const withFb = arnativeMarkdownTheme(base, tag, fb);
+	assert(JSON.stringify(withFb.highlightCode!("let x = 1", "ts")) === JSON.stringify(["<hl:ts>let x = 1</hl>"]), "fallback colors non-diff fences when the base is plain");
+	assert(JSON.stringify(withFb.highlightCode!("+ a", "diff")) === JSON.stringify(["<toolDiffAdded>+ a</toolDiffAdded>"]), "diff fences still win over the fallback");
+	const withIdFb = arnativeMarkdownTheme(base, tag, (code) => code.split("\n"));
+	assert(JSON.stringify(withIdFb.highlightCode!("let x", "ts")) === JSON.stringify(["let x"]), "an identity fallback leaves the base output");
+	const withFbNoBase = arnativeMarkdownTheme(noHighlight, tag, fb);
+	assert(JSON.stringify(withFbNoBase.highlightCode!("let x", "ts")) === JSON.stringify(["<hl:ts>let x</hl>"]), "fallback alone defines highlightCode");
+	const hlBase: MarkdownTheme = { ...base, highlightCode: (code) => code.split("\n").map((l) => `B(${l})`) };
+	const hlWins = arnativeMarkdownTheme(hlBase, tag, fb);
+	assert(JSON.stringify(hlWins.highlightCode!("let x", "ts")) === JSON.stringify(["B(let x)"]), "a base that already highlights is never double-painted");
 
 	// banners: rule under H1/H2, fences skipped, streaming tail left alone
 	assert(bannerHeadings("# Title\nbody", false) === "# Title\n\n---\nbody", "H1 gains a rule");
