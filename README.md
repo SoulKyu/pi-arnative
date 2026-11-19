@@ -73,7 +73,7 @@ module deleted here is pruned from the installed copy (a stale entry point would
 | `ctrl+alt+o` · `alt+o` | Expand or collapse task list |
 | `ctrl+alt+j` · `alt+j` | Scroll task list down |
 | `ctrl+alt+k` · `alt+k` | Scroll task list up |
-| `ctrl+alt+w` · `alt+w` | Cycle transcript view: Replies, Activity, All (fullscreen) |
+| `ctrl+alt+w` · `alt+w` | Cycle transcript view: Replies, Activity, All (fullscreen). Replies names the running step (`↳ step 12 · bash · npm test`) |
 | Click `[show]` / `[hide]` · `ctrl+o` | Toggle tool output box |
 | `←` / `Esc` | Step back to parent menu / close active screen |
 | `/arnative` | Settings menu (Themes, Headers, Footers, Animations, Auto-compact, Model heal, Providers, Usage, Budget) |

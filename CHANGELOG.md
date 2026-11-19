@@ -11,6 +11,7 @@
 ## [Unreleased]
 
 ### Added
+- **Replies names the step in progress.** While the agent works, the Replies view shows `↳ step 12 · bash · npm test` under the view tabs: the tool that just started and the argument that identifies it (command, path, pattern, query, agent), counted since the prompt. The row is driven by pi's tool events, costs no tokens, and leaves when the agent settles; Activity and All already show the work and get no row (`extensions/views.ts`, `stepLabel`, `viewRows`; `test/views.test.ts`).
 - **A running tool shows its output as it streams.** While a tool is still running, the tail of its partial output renders dim in a pending box with a `running…` marker, capped to the terminal height with an `↑ N earlier lines` counter; a tool that has printed nothing yet still renders nothing (`extensions/tools.ts`, `partialResultLines`).
 - **A finished Thinking label expands on click.** A run that kept its text shows `[click to expand]`; a left click opens the thinking in a dim box (up to 12 lines, then `… N more lines`), and a second click closes it (`extensions/ui-render-tweaks.ts`, `ThinkingLabelComponent`).
 - **Code fences are syntax-colored even when the base markdown theme leaves them plain.** The arnative markdown layer falls back to pi's own `highlightCode`; a base theme that already highlights is never painted twice, and ```diff fences keep their `toolDiff*` colors (`lib/markdown-theme.ts`, `arnativeMarkdownTheme`).

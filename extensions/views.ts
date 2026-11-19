@@ -7,6 +7,9 @@
  * Status lines, errors and anything unknown stay in every view: nothing is hidden unless it
  * is known to be the other view's content.
  *
+ * Replies hides the work, so while the agent runs it names the step in progress under the
+ * tabs (`↳ step 12 · bash · npm test`): the tool that just started, counted per prompt.
+ *
  * Render layer only. The filter swaps `chatContainer.children` for the duration of one
  * `render`/`handleMouse` call, so pi's own code (session rebuild, expand/collapse, status
  * coalescing) keeps seeing every component, and search, selection and prompt jumps work on
@@ -26,6 +29,7 @@ import {
 	type ExtensionContext,
 } from "@earendil-works/pi-coding-agent";
 import { Spacer, truncateToWidth, TuiAltScreen } from "@earendil-works/pi-tui";
+import { homedir } from "node:os";
 import { patchOnce } from "../lib/patch.ts";
 import { SHORTCUT_CYCLE_VIEW } from "../lib/shortcuts.ts";
 
@@ -106,6 +110,34 @@ export function viewTabs(th: FgTheme, view: View, width: number): string {
 	return truncateToWidth(` ${tabs.join(th.fg("dim", " · "))}${th.fg("dim", `  [${SHORTCUT_CYCLE_VIEW.label}]`)}`, width, "");
 }
 
+/** The tool call in progress and its rank since the prompt. */
+export type Step = { count: number; label: string };
+let step: Step | undefined;
+export const currentStep = (): Step | undefined => step;
+
+/** Arguments that say what a call is about, most telling first. */
+const TARGET_KEYS = ["command", "path", "file_path", "pattern", "query", "queries", "url", "agent", "tool", "subject", "name", "task", "prompt"];
+
+/** `bash · npm test`: the tool, then the argument a reader recognises (else its first string). */
+export function stepLabel(toolName: string, args: unknown): string {
+	const given = (args && typeof args === "object" ? args : {}) as Record<string, unknown>;
+	const target = [...TARGET_KEYS.map((key) => given[key]), ...Object.values(given)]
+		.map((value) => (Array.isArray(value) ? value[0] : value))
+		.find((value): value is string => typeof value === "string" && value.trim() !== "");
+	// Cut first: a heredoc can be megabytes, and only one row of it is ever painted.
+	const text = target ? `${toolName} · ${target.slice(0, 200)}` : toolName;
+	return text.replaceAll(homedir(), "~").replace(/\s+/g, " ").trim();
+}
+
+/** The widget above the editor: the tabs, plus the running step where the work is hidden. */
+export function viewRows(th: FgTheme, view: View, running: Step | undefined, width: number): string[] {
+	const rows = [viewTabs(th, view, width)];
+	if (view === "replies" && running) {
+		rows.push(truncateToWidth(` ${th.fg("dim", `↳ step ${running.count} ·`)} ${th.fg("muted", running.label)}`, width, "…"));
+	}
+	return rows;
+}
+
 type Mode = {
 	chatContainer?: Chat;
 	ui?: { requestRender(): void };
@@ -134,9 +166,19 @@ export default function (pi: ExtensionAPI) {
 		attach(ctx);
 		// Always on screen in fullscreen: a filtered transcript with no sign of it reads as lost output.
 		ctx.ui.setWidget("arnative-views", (_tui, theme) => ({
-			render: (width: number) => (isFullscreen() ? [viewTabs(theme, currentView(), width)] : []),
+			render: (width: number) => (isFullscreen() ? viewRows(theme, currentView(), step, width) : []),
 			invalidate() {},
 		}));
+	});
+
+	pi.on("tool_execution_start", async (event) => {
+		step = { count: (step?.count ?? 0) + 1, label: stepLabel(event.toolName, event.args) };
+		mode?.ui?.requestRender();
+	});
+	// Not agent_end: pi may still retry, compact or run a queued follow-up after it.
+	pi.on("agent_settled", async () => {
+		step = undefined;
+		mode?.ui?.requestRender();
 	});
 
 	const cycle = (ctx: ExtensionContext) => {
