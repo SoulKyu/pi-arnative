@@ -27,11 +27,15 @@ import {
 	actionWord,
 	listRowsFor,
 	normalizeState,
+	openSignature,
+	openTodos,
 	patchTodo,
 	recapRows,
 	recapSummary,
+	reminderText,
 	removeTodo,
 	renderTodoBox,
+	TODO_REMINDER,
 	todoLayout,
 	todoWindow,
 	type TaskState,
@@ -487,6 +491,28 @@ export default function (pi: ExtensionAPI) {
 	pi.on("session_start", async (event, ctx) => {
 		loadState(ctx, (event as { reason?: string } | undefined)?.reason === "reload");
 		refresh(ctx, true);
+	});
+
+	// A list left at 6/7 once the work is done: before the run settles, the agent gets one
+	// more turn to reconcile it. `acknowledged` is the open set it was asked about and left as
+	// it was, so a list that stays open on purpose is not asked about again on every prompt.
+	let reminded = false;
+	let acknowledged = "";
+	pi.on("agent_before_settle", async (event, ctx) => {
+		const open = openTodos(store().state);
+		// Outside the TUI the last message is the run's result (print mode, a subagent over RPC):
+		// an extra turn would replace the answer with a line about the list.
+		if (ctx.mode !== "tui" || event.outcome !== "completed" || reminded || open.length === 0) return;
+		if (openSignature(open) === acknowledged) return;
+		reminded = true;
+		return {
+			entries: [...event.entries, { type: "custom_message", customType: TODO_REMINDER, content: reminderText(open), display: false }],
+			continue: true,
+		};
+	});
+	pi.on("agent_settled", async (event) => {
+		if (reminded && !event.aborted) acknowledged = openSignature(openTodos(store().state));
+		reminded = false;
 	});
 
 	pi.registerCommand("todos", {

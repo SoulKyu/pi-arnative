@@ -12,12 +12,16 @@ import {
 	UserMessageComponent,
 } from "@earendil-works/pi-coding-agent";
 import { Container, Spacer, visibleWidth } from "@earendil-works/pi-tui";
+import { homedir } from "node:os";
 import extension, {
+	currentStep,
 	currentView,
 	installViewFilter,
 	kindOf,
 	nextView,
 	setView,
+	stepLabel,
+	viewRows,
 	viewTabs,
 	visibleChildren,
 	type View,
@@ -125,4 +129,42 @@ test("the key cycles replies → activity → all, in fullscreen only", () => {
 	setView("all");
 	assert.equal(currentView(), "all", "the view outlives the module (globalThis), so /reload keeps it");
 	setView(before);
+});
+
+test("a step is named by its tool and the argument a reader recognises", () => {
+	assert.equal(stepLabel("bash", { command: "npm  test\n--watch" }), "bash · npm test --watch", "whitespace folds to one line");
+	assert.equal(stepLabel("read", { path: `${homedir()}/repo/a.ts`, limit: 10 }), "read · ~/repo/a.ts", "home shortens to ~");
+	assert.equal(stepLabel("subagent", { task: "review the diff", agent: "monitoring-sre" }), "subagent · monitoring-sre", "the agent names the step, not its prompt");
+	assert.equal(stepLabel("web_search", { queries: ["pi tui widgets", "second"] }), "web_search · pi tui widgets", "the first of several queries");
+	assert.equal(stepLabel("todo", { action: "update", id: 3, status: "completed" }), "todo · update", "no known key: the first string argument");
+	assert.equal(stepLabel("ls", {}), "ls");
+	assert.equal(stepLabel("ls", undefined), "ls", "a tool called without arguments");
+	assert.ok(stepLabel("bash", { command: "x".repeat(5000) }).length < 300, "a huge argument is cut before it is ever painted");
+});
+
+test("Replies shows the running step under the tabs; the other views already show the work", () => {
+	const step = { count: 12, label: "bash · npm test" };
+	const rows = viewRows(tag, "replies", step, 200);
+	assert.equal(rows.length, 2);
+	assert.match(rows[0]!, /● Replies/);
+	assert.match(rows[1]!, /<dim>↳ step 12 ·<\/dim> <muted>bash · npm test<\/muted>/);
+	assert.equal(viewRows(tag, "replies", undefined, 200).length, 1, "an idle agent adds no row");
+	assert.equal(viewRows(tag, "activity", step, 200).length, 1);
+	assert.equal(viewRows(tag, "all", step, 200).length, 1);
+	const narrow = viewRows({ fg: (_c, text) => text }, "replies", { count: 1, label: "bash · " + "y".repeat(200) }, 30)[1]!;
+	assert.ok(visibleWidth(stripAnsi(narrow)) <= 30 && narrow.includes("…"), "a long step is cut with an ellipsis");
+});
+
+test("each tool start is a step, and the count runs until the agent settles", async () => {
+	const handlers = new Map<string, (event: unknown, ctx: unknown) => Promise<void>>();
+	extension({ on: (event: string, handler: never) => handlers.set(event, handler), registerShortcut() {} } as never);
+	assert.equal(currentStep(), undefined);
+	await handlers.get("tool_execution_start")!({ toolName: "read", args: { path: "a.ts" } }, {});
+	await handlers.get("tool_execution_start")!({ toolName: "bash", args: { command: "npm test" } }, {});
+	assert.deepEqual(currentStep(), { count: 2, label: "bash · npm test" });
+	await handlers.get("agent_settled")!({ aborted: false }, {});
+	assert.equal(currentStep(), undefined, "a settled agent is working on nothing");
+	await handlers.get("tool_execution_start")!({ toolName: "ls", args: {} }, {});
+	assert.deepEqual(currentStep(), { count: 1, label: "ls" }, "the next prompt counts from one");
+	await handlers.get("agent_settled")!({ aborted: true }, {});
 });

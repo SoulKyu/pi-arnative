@@ -169,6 +169,26 @@ export const activeTodo = (state: TodoState): Task | undefined => state.tasks.fi
 /** True when every task is done, the state that folds the box back to one row. */
 export const allDone = (state: TodoState): boolean => state.tasks.length > 0 && state.tasks.every((task) => task.status === "completed");
 
+/** The tasks still to finish, in list order. */
+export const openTodos = (state: TodoState): Task[] => state.tasks.filter((task) => task.status !== "completed");
+
+/** Identity of an open set: the same tasks in the same statuses were already asked about. */
+export const openSignature = (open: Task[]): string => open.map((task) => `${task.id}:${task.status}`).join(",");
+
+/** customType of the hidden message that asks the agent to reconcile its list. */
+export const TODO_REMINDER = "arnative-todo-reminder";
+
+/** The end-of-run check, written for the model: name what is open, ask for the list to be
+ *  fixed, and keep the extra turn from repeating the answer the user already has. */
+export function reminderText(open: Task[]): string {
+	const list = open.map((task) => `#${task.id} ${task.subject} (${task.status})`).join("; ");
+	return (
+		`Task list check before you stop: ${open.length} ${open.length === 1 ? "task is" : "tasks are"} not completed: ${list}. ` +
+		"If that work is done, mark it completed with the todo tool now. If something is really left to do, leave it as it is. " +
+		"Do not repeat your previous answer: reply with one short line at most."
+	);
+}
+
 /** What the collapsed row says after the count: the task in progress, or that nothing is left. */
 export const COLLAPSED_DONE = "All tasks finished";
 

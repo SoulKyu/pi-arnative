@@ -365,3 +365,45 @@ test("holding a counter row auto-scrolls until release", async () => {
 	await new Promise((resolve) => setTimeout(resolve, 150));
 	assert.deepEqual(component.render(80), afterRelease, "releasing stops auto-scroll and keeps box open");
 });
+
+test("a list left open is checked once before the agent settles", async () => {
+	type Settle = { entries?: { type: string; customType: string; content: string; display: boolean }[]; continue?: boolean } | undefined;
+	const settle = (event: object = {}, context: object = reminderCtx) =>
+		handlers.get("agent_before_settle")!({ entries: [], outcome: "completed", ...event }, context) as Promise<Settle>;
+	const settled = (aborted = false) => handlers.get("agent_settled")!({ aborted }, reminderCtx);
+	const reminderCtx = { ...ctx, sessionManager: { getSessionId: () => "widget-reminder-session" } };
+	const run = (params: unknown) => registered!.execute("call-4", params, undefined, undefined, reminderCtx);
+	await handlers.get("session_start")!({ reason: "new" }, reminderCtx);
+
+	assert.equal(await settle(), undefined, "an empty list asks nothing");
+
+	await run({ action: "create", tasks: [{ subject: "Ship it" }, { subject: "Write docs" }] });
+	await run({ action: "update", id: 1, status: "in_progress" });
+	assert.equal(await settle({ outcome: "aborted" }), undefined, "an interrupted run is left alone");
+	assert.equal(await settle({ outcome: "error" }), undefined, "so is a failed one");
+	assert.equal(await settle({}, { ...reminderCtx, mode: "rpc" }), undefined, "a subagent's last message is its result: never add a turn to it");
+
+	const kept = { type: "custom", customType: "other-extension" };
+	const asked = await settle({ entries: [kept] });
+	assert.equal(asked?.continue, true, "the agent gets one more turn");
+	assert.equal(asked?.entries?.[0], kept as never, "entries from other extensions are kept");
+	const reminder = asked!.entries![1]!;
+	assert.deepEqual([reminder.type, reminder.customType, reminder.display], ["custom_message", "arnative-todo-reminder", false]);
+	assert.match(reminder.content, /2 tasks? .*#1 Ship it \(in_progress\); #2 Write docs \(pending\)/);
+	assert.equal(await settle(), undefined, "the turn it asked for is not asked again");
+
+	// The agent answered the reminder by finishing one task and leaving the other on purpose.
+	await run({ action: "update", id: 1, status: "completed" });
+	await settled();
+	assert.equal(await settle(), undefined, "what it left open after being asked is not asked about on every prompt");
+
+	await run({ action: "create", subject: "New work" });
+	assert.equal((await settle())?.continue, true, "a list that changed since is checked again");
+	await settled(true);
+	assert.equal((await settle())?.continue, true, "an interrupted answer acknowledges nothing");
+	await settled();
+
+	await run({ action: "update", id: 2, status: "completed" });
+	await run({ action: "update", id: 3, status: "completed" });
+	assert.equal(await settle(), undefined, "a finished list asks nothing");
+});
