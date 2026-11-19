@@ -13,12 +13,20 @@
  *    text darkened (theme canvas) so contrast stays high (9.6:1).
  * 6. `ctx.ui.select` rows: pi paints the whole selected row accent -> keep accent on
  *    the `→` marker and `·` separators, selected text in soft.
+ * 7. Arnative markdown theme (lib/markdown-theme.ts): one patch on
+ *    `InteractiveMode.getMarkdownThemeWithSettings` frames code blocks, heavy-quotes the
+ *    quote bar, swaps bullets for `•` and heading prefixes for `▸`, and colors ```diff
+ *    fences with the toolDiff* tokens — streaming, history and every component that asks
+ *    the mode for its theme.
+ * 8. Assistant H1/H2 banners: a `registerMarkdownTransformer` call drops a dim rule
+ *    under H1/H2 headings (lib/markdown-theme.ts `bannerHeadings`).
  */
 import {
 	AssistantMessageComponent,
 	CompactionSummaryMessageComponent,
 	ExtensionSelectorComponent,
 	getMarkdownTheme,
+	highlightCode,
 	initTheme,
 	InteractiveMode,
 	Theme,
@@ -34,16 +42,18 @@ import {
 	TuiAltScreen,
 	visibleWidth,
 	type Component,
+	type MarkdownTheme,
 	type TuiMouseEvent,
 	type TuiMouseEventResult,
 } from "@earendil-works/pi-tui";
 import { readdirSync, readFileSync } from "node:fs";
 import { renderBoxLines } from "../lib/box.ts";
 import { statusRows } from "../lib/status-widget.ts";
-import { ansiBgOpen, getActiveTheme, setActiveTheme, stripAnsi, themeOf, softSecondaryOf } from "../lib/ansi.ts";
+import { ansiBgOpen, getActiveTheme, setActiveTheme, stripAnsi, stripRoleGutter, themeOf, softSecondaryOf } from "../lib/ansi.ts";
 import { assert, isMain } from "../lib/check.ts";
 import { contrast, oklchToRgb, parseOklch, toHex } from "../lib/color.ts";
 import { expandKeyName } from "../lib/format.ts";
+import { arnativeMarkdownTheme, bannerHeadings } from "../lib/markdown-theme.ts";
 import { patchOnce } from "../lib/patch.ts";
 
 type ActiveTheme = { fg(color: string, text: string): string; bg?(color: string, text: string): string; italic?(text: string): string } | null;
@@ -152,6 +162,15 @@ if (TuiAltScreen?.prototype) {
 			return fgOpen && bgOpen ? recolorSelection(highlighted, fgOpen, bgOpen) : highlighted;
 		});
 	}
+	// Fullscreen copy reads the RENDERED screen, and the assistant role gutter
+	// (extensions/timestamps.ts) is a real cell — strip it on the copy path so a pasted
+	// paragraph carries no bar. Tool-box walls and quote bars are not touched.
+	if (typeof proto.getActiveSelectionText === "function") {
+		patchOnce(proto, "getActiveSelectionText", (orig) => function (this: any): string | undefined {
+			const text = orig.call(this);
+			return text === undefined ? undefined : stripRoleGutter(text);
+		});
+	}
 }
 
 if (TuiAltScreen?.prototype) {
@@ -219,6 +238,12 @@ export default function uiRenderTweaks(pi: ExtensionAPI) {
 	pi.on("session_shutdown", async () => {
 		clearThinkingTicker();
 	});
+
+	// 8. Assistant H1/H2 banners: a dim rule lands under the heading (bannerHeadings).
+	// User and thinking text pass through untouched.
+	pi.registerMarkdownTransformer((markdown, { messageType, isStreaming }) =>
+		messageType === "assistant" ? bannerHeadings(markdown, isStreaming) : markdown,
+	);
 
 	// 4. `pi-jev-eye-review` contract message: use our own border box.
 	// Collapsed by default: [pi-jev-eye] Reviewed turn contract. [click to expand]
@@ -312,6 +337,20 @@ if (InteractiveMode?.prototype) {
 			const ui = (this as unknown as { ui?: { requestRender(): void } }).ui;
 			if (ui) thinkingState.ui = ui;
 			return origRenderWidgets.call(this);
+		});
+	}
+}
+
+// 7. Arnative markdown theme: the one patch site for the markdown layer (see
+// lib/markdown-theme.ts). getMarkdownThemeWithSettings is the single getter pi uses for
+// streaming AND history, so every Markdown component in the transcript follows.
+if (InteractiveMode?.prototype) {
+	const proto = InteractiveMode.prototype as unknown as {
+		getMarkdownThemeWithSettings?: () => MarkdownTheme;
+	};
+	if (typeof proto.getMarkdownThemeWithSettings === "function") {
+		patchOnce(proto, "getMarkdownThemeWithSettings", (orig) => function (this: any): MarkdownTheme {
+			return arnativeMarkdownTheme(orig.call(this), activeTheme(), highlightCode);
 		});
 	}
 }
@@ -533,6 +572,8 @@ export class ThinkingLabelComponent implements Component {
 	private startMs: number | undefined;
 	private finished: string | undefined;
 	private getTheme: () => ActiveTheme;
+	private content: string;
+	expanded = false;
 
 	constructor(
 		padX: number,
@@ -540,17 +581,23 @@ export class ThinkingLabelComponent implements Component {
 		startMs: number | undefined,
 		getTheme: () => ActiveTheme,
 		finished?: string,
+		content = "",
 	) {
 		this.isActive = isActive;
 		this.startMs = startMs;
 		this.finished = finished;
 		this.getTheme = getTheme;
+		this.content = content;
 		this.inner = new Text(this.labelText(), padX, 0);
 	}
 
 	private labelText(): string {
 		const dots = this.isActive ? thinkingDotsAt(Date.now(), this.startMs ?? Date.now()) : "...";
-		return formatThinkingLabel(this.getTheme(), dots, this.isActive ? undefined : this.finished);
+		const base = formatThinkingLabel(this.getTheme(), dots, this.isActive ? undefined : this.finished);
+		const th = this.getTheme();
+		if (!this.content.trim() || this.isActive || !th) return base;
+		const hint = this.expanded ? "[click to collapse]" : "[click to expand]";
+		return `${base} ${th.fg("dim", hint)}`;
 	}
 
 	invalidate(): void {
@@ -559,7 +606,24 @@ export class ThinkingLabelComponent implements Component {
 
 	render(width: number): string[] {
 		this.inner.setText(this.labelText());
-		return this.inner.render(width);
+		const label = this.inner.render(width);
+		if (!this.expanded || !this.content.trim()) return label;
+		const th = this.getTheme();
+		if (!th) return label;
+		const lines = this.content.replace(/\s+$/, "").split("\n");
+		const cap = Math.max(4, Math.min(12, (process.stdout.rows || 28) - 8));
+		const shown = lines.length > cap ? lines.slice(0, cap) : lines;
+		const rows = shown.map((l) => th.fg("dim", l));
+		if (lines.length > cap) rows.push(th.fg("dim", `… ${lines.length - cap} more lines`));
+		return [...label, ...renderBoxLines(th, width, rows)];
+	}
+
+	handleMouse(event: TuiMouseEvent): TuiMouseEventResult | undefined {
+		if (event.type === "click" && event.button === "left" && this.content.trim()) {
+			this.expanded = !this.expanded;
+			return { handled: true };
+		}
+		return undefined;
 	}
 }
 
@@ -584,6 +648,9 @@ export function patchThinkingInAssistantMessage(comp: {
 		return false;
 	}
 	const activeRunIdx = activeThinkingRunIndex(comp.lastMessage, Boolean(comp.isStreaming));
+	const thinkingTexts = (comp.lastMessage?.content ?? [])
+		.filter((b) => b?.type === "thinking" && typeof b.thinking === "string" && b.thinking.trim())
+		.map((b) => b.thinking as string);
 	const children = comp.contentContainer?.children ?? [];
 	const starts = thinkingState.starts.get(comp) ?? [];
 	const finished = thinkingState.finished.get(comp) ?? [];
@@ -609,6 +676,7 @@ export function patchThinkingInAssistantMessage(comp: {
 				starts[runIdx],
 				activeTheme,
 				finished[runIdx],
+				thinkingTexts[runIdx] ?? "",
 			);
 			anyReplaced = true;
 		}
@@ -652,6 +720,19 @@ if (isMain(import.meta.url)) {
 	assert(ansiFgOpen(null) === "", "no theme: empty fgOpen");
 	assert(ansiFgOpen({ fg: (_c, t) => `\x1b[38;2;1;2;3m${t}\x1b[39m` }) === "\x1b[38;2;1;2;3m", "fgOpen taken from the theme probe");
 	assert(ansiBgOpen({ bg: (_c, t) => `\x1b[48;2;9;9;9m${t}\x1b[49m` }, "selectedBg") === "\x1b[48;2;9;9;9m", "bgOpen selectedBg taken");
+
+	// Copy: the role gutter is a rendered cell, so the copy path must strip it. The stub
+	// feeds the patched method exactly what the real one reads (screen rows + columns).
+	const selStub = {
+		getSelectionBounds: () => ({ start: { row: 0 }, end: { row: 1 } }),
+		previousScreen: ["▎ ligne une", "▏ ligne deux", "│ boîte outil"],
+		getSelectionColumns: (_l: string, _r: number) => ({ start: 0, end: 80 }),
+		currentLayout: undefined,
+	};
+	const copied = (TuiAltScreen.prototype as any).getActiveSelectionText.call(selStub);
+	assert(copied === "ligne une\nligne deux", "copy: the role gutter is stripped from the selection");
+	const noSel = (TuiAltScreen.prototype as any).getActiveSelectionText.call({ getSelectionBounds: () => null });
+	assert(noSel === undefined, "copy: no selection still returns undefined");
 
 	// "Jump to latest message" pill: accent bg + canvas text (not grey selectedBg).
 	// Use the REAL theme: the permissive stub would let `bg("accent")` through,
@@ -873,6 +954,7 @@ if (isMain(import.meta.url)) {
 	const fakePi = {
 		handlers: [] as any[],
 		renderers: {} as Record<string, any>,
+		transformers: [] as any[],
 		on(_e: string, h: any) {
 			this.handlers.push(h);
 			return () => {};
@@ -880,10 +962,32 @@ if (isMain(import.meta.url)) {
 		registerMessageRenderer(t: string, r: any) {
 			this.renderers[t] = r;
 		},
+		registerMarkdownTransformer(t: any) {
+			this.transformers.push(t);
+		},
 	};
 	initTheme(); // markdown + pi's internal theme (already active in a real session)
 	uiRenderTweaks(fakePi as any);
 	await fakePi.handlers[0]({}, { ui: { theme: { fg: (_c: string, t: string) => t } } });
+
+	// markdown layer: the patched getter frames fences, rails code, swaps glyphs
+	const mdTheme = InteractiveMode.prototype.getMarkdownThemeWithSettings.call({
+		settingsManager: { getCodeBlockIndent: () => "  " },
+	});
+	assert(mdTheme.codeBlockIndent === "  ", "markdown layer: pi's own code indent stays (a copied block must paste clean)");
+	assert(stripAnsi(mdTheme.codeBlockBorder("```ts")) === "─ ts ─────", "markdown layer: labeled fence rule");
+	assert(stripAnsi(mdTheme.codeBlockBorder("```")) === "──────────", "markdown layer: bare fence rule");
+	assert(stripAnsi(mdTheme.listBullet("- ")) === "• ", "markdown layer: bullet glyph");
+	assert(stripAnsi(mdTheme.quoteBorder("│ ")) === "▌ ", "markdown layer: heavy quote bar");
+	assert(stripAnsi(mdTheme.heading("### ")) === "▸ ", "markdown layer: heading glyph");
+	assert(JSON.stringify(mdTheme.highlightCode!("+ a", "diff")) === JSON.stringify(["+ a"]), "markdown layer: diff fences take the semantic painter");
+
+	// banner transformer: registered once, assistant-only
+	assert(fakePi.transformers.length === 1, "one markdown transformer registered");
+	const banners = fakePi.transformers[0]!;
+	assert(banners("# Title\nbody", { messageType: "assistant", isStreaming: false }) === "# Title\n\n---\nbody", "assistant H1 gains a rule");
+	assert(banners("# Title\nbody", { messageType: "user", isStreaming: false }) === "# Title\nbody", "user text untouched");
+	assert(banners("# Still", { messageType: "assistant", isStreaming: true }) === "# Still", "streaming heading left alone");
 
 	const kids: any[] = [];
 	const fake = {
@@ -983,6 +1087,23 @@ if (isMain(import.meta.url)) {
 		doneLines.some((l) => l.startsWith("\uec21 Thought for ")),
 		"a finished hidden thinking run settles on \uec21 Thought for Ns, not Thinking...",
 	);
+
+	// Collapsible thinking: a finished run with content shows an expand hint; a click on the
+	// label component toggles a dim box with the thinking text.
+	setActiveTheme({ fg: (_c: string, t: string) => t } as any); // plain theme so stripOsc sees raw text
+	const hintLines = activeComp.render(60).map(stripOsc);
+	assert(hintLines.some((l) => l.includes("[click to expand]")), "a finished run with content shows the expand hint");
+	const region = (activeComp as any).contentContainer?.children?.find((c: any) => c?.child instanceof ThinkingLabelComponent);
+	assert(region?.child instanceof ThinkingLabelComponent, "the thinking region child is the label component");
+	assert(region.child.handleMouse({ type: "click", button: "left" } as any)?.handled === true, "click on the label is handled when content exists");
+	const thinkExpLines = activeComp.render(60).map(stripOsc);
+	assert(thinkExpLines.some((l) => l.includes("pondering")) && thinkExpLines.some((l) => l.includes("╭")), "expanded thinking renders the content in a box");
+	assert(thinkExpLines.some((l) => l.includes("[click to collapse]")), "the expanded label offers collapse");
+	region.child.handleMouse({ type: "click", button: "left" } as any);
+	assert(activeComp.render(60).map(stripOsc).every((l) => !l.includes("pondering")), "a second click collapses the box again");
+	const emptyLabel = new ThinkingLabelComponent(1, false, undefined, activeTheme, "Thought for 1s", "");
+	assert(emptyLabel.handleMouse({ type: "click", button: "left" } as any) === undefined, "no content: click falls through to pi's own handling");
+	setActiveTheme(null);
 	clearThinkingTicker();
 
 	console.log("ui-render-tweaks.ts self-check OK");

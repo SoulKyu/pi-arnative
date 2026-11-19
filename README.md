@@ -73,6 +73,7 @@ module deleted here is pruned from the installed copy (a stale entry point would
 | `ctrl+alt+o` · `alt+o` | Expand or collapse task list |
 | `ctrl+alt+j` · `alt+j` | Scroll task list down |
 | `ctrl+alt+k` · `alt+k` | Scroll task list up |
+| `ctrl+alt+w` · `alt+w` | Cycle transcript view: Replies, Activity, All (fullscreen) |
 | Click `[show]` / `[hide]` · `ctrl+o` | Toggle tool output box |
 | `←` / `Esc` | Step back to parent menu / close active screen |
 | `/arnative` | Settings menu (Themes, Headers, Footers, Animations, Auto-compact, Model heal, Providers, Usage, Budget) |
@@ -111,6 +112,7 @@ Bind `app.session.new` in `~/.pi/agent/keybindings.json`:
 | `extensions/footer.ts` | 3-row status grid, Minimal footer, and boxed editor |
 | `extensions/tools.ts` | Rounded tool boxes, spinners, duration, and `[show]` / `[hide]` toggles |
 | `extensions/todos.ts` | `todo` tool, boxed widget above editor, and `/todos` screen |
+| `extensions/views.ts` | Replies / Activity / All transcript views and their tab row |
 | `extensions/animations.ts` | Spinner preset picker and live preview |
 | `extensions/autocompact.ts` | Smart and fixed-budget context compaction |
 | `extensions/model-heal.ts` | Automatic `models.json` heal triggers and `/model-heal` |

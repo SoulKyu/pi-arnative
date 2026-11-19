@@ -21,6 +21,7 @@ const EXTENSIONS = [
 	"autocompact.ts",
 	"model-heal.ts",
 	"todos.ts",
+	"views.ts",
 	"arnative.ts",
 ];
 
